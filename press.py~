@@ -145,6 +145,7 @@ class Press():
 	
 		if c%n<17 :
 			# read temp
+			
 			mv = self.mv110[c%17/8]
 			v = mv.read_register(c%8*6+1)
 			m = mv.read_register(c%8*6+0)
