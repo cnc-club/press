@@ -158,7 +158,7 @@ class Press():
 		self.inv = []
 		self.running = False
 		self.init_gtk()
-		self.log_file = open("log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w")
+		self.log_file = open("log/log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w")
 		self.cycle_count = 0
 		
 	def init_gtk(self) :
