@@ -7,7 +7,7 @@ import pygtk
 import gtk
 import gobject
 
-press_update_int = 5000
+press_update_int = 1000
 
 class Zone() :
 
@@ -19,13 +19,16 @@ class Zone() :
 		self.press = press
 		self.t = []
 		self.get_conf()
+		self.done = False
 		
 	def get_conf(self) :
-		self.heater_n = self.press.get_conf("Zone%s"%self.i, "heater") 
-		self.cooler_n = self.press.get_conf("Zone%s"%self.i, "cooler") 
-		self.t_n = self.press.get_conf("Zone%s"%self.i, "t_n") 
-		self.t1_n = self.press.get_conf("Zone%s"%self.i, "t1_n") 
-		self.dead_band = self.press.get_conf("Zone%s"%self.i, "Мертвая_зона") 
+		self.heater_n = int(self.press.get_conf("Zone%s"%self.i, "heater") )
+		self.cooler_n = int(self.press.get_conf("Zone%s"%self.i, "cooler") )
+		self.t_n = int(self.press.get_conf("Zone%s"%self.i, "t_n") )
+		self.t1_n = int(self.press.get_conf("Zone%s"%self.i, "t1_n") )
+		self.dead_band = float(self.press.get_conf("Zone%s"%self.i, "Мертвая_зона") )
+		self.max_heat_t = float(self.press.get_conf("Zone%s"%self.i, "max_heat_t") )
+		
 		#self.pid.Kp = self.press.get_conf("Zone%s"%self.i, "p") 
 		#self.pid.Ki = self.press.get_conf("Zone%s"%self.i, "i") 
 		#self.pid.Kd = self.press.get_conf("Zone%s"%self.i, "d") 
@@ -39,9 +42,13 @@ class Zone() :
 			self.prog.append((t,y))
 			i += 1
 
+	def get_temp(self) :
+		return self.press.sens[self.t_n]
+
 	def update(self, cycle) :
 		#self.pid.set_point = self.get_command(cycle)
 		#c = self.pid.update(self.t)
+		self.done = sum(self.prog[1])>cycle
 		c = self.get_temp() - self.get_command(cycle)
 		if c > self.dead_band :
 			c = min(c,self.max_heat_t)
@@ -152,6 +159,7 @@ class Press():
 		self.running = False
 		self.init_gtk()
 		self.log_file = open("log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w")
+		self.cycle_count = 0
 		
 	def init_gtk(self) :
 		self.main = gtk.Window(gtk.WINDOW_TOPLEVEL)
@@ -192,14 +200,22 @@ class Press():
 		vbox.pack_start(b)				
 		self.stop = b
 		
+		t = gtk.Table()
 		l = gtk.Label("Время в цикле")
-		vbox.pack_start(l)
+		l = t.attach(l,0,1,0,1)
+		
+		l = gtk.Label("00:00:00")
+		t.attach(l,1,2,0,1)
 		self.cycle_label = l
 		
 		l = gtk.Label("Колчество циклов")
-		vbox.pack_start(l)
+		t.attach(l,0,1,1,2)
+
+		l = gtk.Label("0")
+		t.attach(l,1,2,1,2)
 		self.cycle_num = l
 
+		vbox.pack_start(t)
 		hbox.pack_start(vbox)		
 
 		i = 0
@@ -216,7 +232,6 @@ class Press():
 
 
 	def quit(self, *arg) :
-		self.read_sensors_thread.quit = True
 		self.off()
 		self.config.write(open("press.ini","w"))
 		gtk.main_quit()
@@ -241,12 +256,24 @@ class Press():
 		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S"), self.state)
 		
 
+
+
 	def run(self) :
 		if not self.running :
 			return False		
 		else :	
-			self.cycle = time() - self.start_time		
-			
+			self.cycle = time() - self.start_time
+			c = int(self.cycle)
+			self.cycle_label.set_text("%02d:%02d:%02d"%(c/3600,c/60%60,c%60) )
+			done = True
+			for z in self.zones :
+				z.update(self.cycle)
+				done = done and z.done
+			if done :
+				self.cycle_count += 1	
+				self.self.cycle_num.set_text("%s"%self.cycle_count)
+				self.cycle = 0
+				self.start_time = time()
 			return True	
 			
 
@@ -295,7 +322,10 @@ class Press():
 			m = mv.read_register(c%8*6+0)
 			self.sens[c] = float(v)/(10**m)		
 		
-		
+		if c%n == 16 :
+			for z in self.zones:
+				self.temp_labels[i].set_text("%.1d"%self.sens[z.t_n])
+				self.temp_labels[i+1].set_text("%.1d"%self.sens[z.t1_n])
 		
 						
 	def update(self) :
