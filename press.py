@@ -39,18 +39,12 @@ class Zone() :
 		#self.pid.Kp = self.press.get_conf("Zone%s"%self.i, "p") 
 		#self.pid.Ki = self.press.get_conf("Zone%s"%self.i, "i") 
 		#self.pid.Kd = self.press.get_conf("Zone%s"%self.i, "d") 
-
+		prog = self.press.get_conf("Zone%s"%self.i, "prog") 
 		i = 1
 		t = 0
-		while True: 
-			temp = self.press.get_conf("Zone%s"%self.i, "t%s"%i, set_value=False)
-			
-			print temp, self.i
-			if temp==None : break
-			t += float(self.press.get_conf("Zone%s"%self.i, "Время_%s"%i, set_value=False))
-			self.prog[0].append(float(t))
-			self.prog[1].append(float(temp))
-			i += 1
+		for t in prog :
+			self.prog[0].append(t[0])
+			self.prog[1].append(t[1])
 		print self.prog	
 
 	def get_temp(self, t=0) :
