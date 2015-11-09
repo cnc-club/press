@@ -8,7 +8,7 @@ import gtk
 import gobject
 import minimalmodbus
 import serial
-
+import subprocess
 press_update_int = 1000
 
 class Zone() :
@@ -27,6 +27,8 @@ class Zone() :
 		self.cooler = False
 		self.c = 0
 		self.get_conf()
+
+		
 		
 	def get_conf(self) :
 		self.heater_n = int(self.press.get_conf("Zone%s"%self.i, "heater") )
@@ -39,19 +41,14 @@ class Zone() :
 		#self.pid.Kp = self.press.get_conf("Zone%s"%self.i, "p") 
 		#self.pid.Ki = self.press.get_conf("Zone%s"%self.i, "i") 
 		#self.pid.Kd = self.press.get_conf("Zone%s"%self.i, "d") 
-		prog = self.press.get_conf("Zone%s"%self.i, "prog") 
+		prog = eval(self.press.get_conf("Prog", "Zone%s"%(self.i%4+1)))
 		i = 1
 		t = 0
-		while True: 
-			temp = self.press.get_conf("Zone%s"%self.i, "t%s"%i, set_value=False)
-			
-			print temp, self.i
-			if temp==None : break
-			t += float(self.press.get_conf("Zone%s"%self.i, "Время_%s"%i, set_value=False))
-			self.prog[0].append(float(t))
-			self.prog[1].append(float(temp))
-			i += 1
-		print self.prog	
+		self.prog = [[],[]]
+		for t in prog :
+			self.prog[1].append(t[0])
+			self.prog[0].append(t[1])
+
 
 	def get_temp(self, t=0) :
 		return self.press.sens[self.t_n if t==0 else self.t1_n]
@@ -62,10 +59,10 @@ class Zone() :
 	def update(self, cycle) :
 		#self.pid.set_point = self.get_command(cycle)
 		#c = self.pid.update(self.t)
-		print self.prog
 		self.done = sum(self.prog[0])<cycle
 		c = self.get_command(cycle) - self.get_temp()
-		self.c = c
+		self.c = c, self.get_command(cycle), self.dead_band	
+		
 		if c > self.dead_band :
 			c = min(c,self.max_heat_t)
 			self.heater_off = time()+min(self.max_heat_t, c*self.temp_k)
@@ -76,6 +73,10 @@ class Zone() :
 			self.cooler_off = time()+min(self.max_heat_t, c*self.temp_k)
 			self.heater = False
 			self.cooler = True
+		else :	
+			self.heater = False
+			self.cooler = False
+			
 	
 	def off_update(self):
 		if self.heater and self.heater_off < time() :
@@ -101,7 +102,6 @@ class Zone() :
 		
 		t_ = float(cycle - t1)/(t-t1)
 		c = float(self.prog[1][i+1] - self.prog[1][i]) * t_ + self.prog[1][i]
-		print c, self.prog[1]
 		return c
 
 
@@ -109,30 +109,77 @@ class Push() :
 	def __init__(self, press) :	
 		self.press = press
 		self.get_conf(press.conf)
-		
+		self.pch = press.pch
+		self.releasing = False
+		self.release_timer = 0.
 	def get_fb(self) :
-		return self.press.sens[self.sens_n]
+		k = 0.2
+		return self.press.sens[self.sens_n] * k
 		
+	
+	def set_freq(self, f=0, rappid = False) :
+		if rappid :  
+			f = 33.
+		k = 1600./3.9
+		self.freq = f*k
+		
+	
 	def update(self, cycle) :
 		#self.pid.set_point = self.get_command(cycle)
 		#c = self.pid.update(self.t)
+		if self.releasing != False : 
+			return
 		c = self.get_command(cycle)
 		fb = self.get_fb()
 		c = c-fb
+		print self.get_command(cycle), fb, c, self.dead_band
 		if c > self.dead_band :
 			c = min(c,self.max_t)
 			self.push_off = time()+c
+			if self.get_fb()<1 :
+				self.set_freq(10.)
+			else: 
+				self.set_freq(3.9)
+			
 			self.push = True
 			self.pull = False
-		else :					
+		elif c < -self.dead_band :
+			self.set_freq(0)
+			self.push = False
+			self.pull = True
+		else :				
+			self.set_freq(0)	
 			self.push = False
 			self.pull = False
 
-	def release(self) :
-		if self.get_fb() > 100 :
+	def pch_read() :
+		pass
+	
+
+	def release(self, release=True) :
+		if release :
+			if self.releasing not in ["pull up", "wait", "done"] :
+				self.releasing = "start release"
+		else : 
+			self.releasing = False
+		
+		if self.releasing  == "start release" : 
 			self.push = False
 			self.pull = True
-			self.pull_off = time()+5
+			self.set_freq(rappid = True)
+			if self.get_fb() < 2 :
+				self.releasing = "pull up"
+		if self.releasing  == "pull up" : 
+			self.release_timer = time() + 5
+			self.releasing = "wait"
+		if self.releasing == "wait" :
+			if self.release_timer < time() :
+				self.push = False
+				self.pull = False
+				self.set_freq(0)
+				self.releasing = "done"
+
+		
 	
 	def off_update(self) :
 		if self.push and time()>self.push_off :
@@ -142,28 +189,47 @@ class Push() :
 			self.pull = False
 			self.press.update_rs(off=True)
 	
-		
+
 
 	def get_conf(self, conf) :
-		self.down_n = self.press.get_conf("Push", "down_n") 
-		self.up_n = self.press.get_conf("Push", "up_n") 
-		self.up_n = self.press.get_conf("Push", "sens_n") 
-#		self.pid.Kp = self.press.get_conf("Push", "p") 
-#		self.pid.Ki = self.press.get_conf("Push", "i") 
-#s		self.pid.Kd = self.press.get_conf("Push", "d") 
-		self.dead_band = self.press.get_conf("Push", "Мертвая_зона")
-		self.max_t = self.press.get_conf("Push", "max_t") 		
-		self.sens_n = int(self.press.get_conf("Push", "sens_n"))
-
-		self.prog = []		
+		self.push_n = int(self.press.get_conf("Push", "push_n") )
+		self.pull_n = int(self.press.get_conf("Push", "pull_n") )
+		self.sens_n = int(self.press.get_conf("Push", "sens_n") )
+		self.dead_band = float(self.press.get_conf("Push", "Мертвая_зона"))
+		self.max_t = float(self.press.get_conf("Push", "max_t") 		)
+		self.prog = [[],[]]
+		self.push = False
+		self.pull = False	
+		self.freq = 0
+		
+		prog = eval(self.press.get_conf("Prog", "Push")) 
 		i = 1
 		t = 0
-		while True: 
-			y = self.press.get_conf("Push", "t%s"%i, set_value=False)
-			if y==None : break
-			t += self.press.get_conf("Push", "Время_%s"%i, set_value=False)
-			self.prog.append((t,y))
-			i+=1
+		self.prog = [[],[]]
+		for t in prog :
+			self.prog[1].append(t[0])
+			self.prog[0].append(t[1])
+
+
+
+	def get_command(self, cycle) :
+		t = 0 
+		if cycle <= 0:
+			return self.prog[1][0]
+		if cycle >= sum(self.prog[0])-self.prog[0][-1] :
+			return self.prog[1][-1]
+		
+		for i in range(len(self.prog[0])) :
+			t += self.prog[0][i]
+			if t>cycle :
+				break
+		t1 = t - self.prog[0][i]		
+		
+		t_ = float(cycle - t1)/(t-t1)
+		c = float(self.prog[1][i+1] - self.prog[1][i]) * t_ + self.prog[1][i]
+		return c
+
+			
 class Press():
 	def __init__(self) :
 
@@ -186,10 +252,36 @@ class Press():
 		self.rs_read_counter = 0
 		self.push = Push(self)
 		self.state = [0 for i in range(32)]
+		self.last_graph_update = 0
+		self.graph_list = [[],[],[],[],[]]
+		gobject.idle_add(self.update_rs)	
+		self.cycle = 0
+		self.init_linuxcnc()
+		self.cycle_move = float(self.get_conf("Prog", "move"))
+		self.press_prog = ["prog", "release", "wait release", "move"]
+		self.freq_state = -1
+		
+	def init_linuxcnc(self) :
+		print "Start halrun"	
+		subprocess.Popen(["halrun"])
+		sleep(0.5)
+		print "Exec press.hal"		
+		subprocess.call(["halcmd", "-f", "press.hal"])
+		
+	
+	def move(self, x) :
+		p = subprocess.Popen("halcmd getp stepgen.0.position-fb", stdout=subprocess.PIPE, shell=True)
+		pos  = p.communicate()[0]
+		print "pos" , pos	
+		pos = float(pos)
+		subprocess.call(("halcmd setp stepgen.0.position-cmd %s"%(pos+x) ).split())
+		print pos+x
+	
+	def test(self, *arg) :	
+		self.move(20)
+		 
 	
 	def init_rs(self) :
-	
-	
 		self.mu110 = minimalmodbus.Instrument('/dev/ttyS0', 1) # port name, slave address (in decimal)
 		self.mu110.serial.baudrate = 9600   # Baud
 		self.mu110.serial.bytesize = 8
@@ -225,11 +317,23 @@ class Press():
 		self.mv110[2].mode = minimalmodbus.MODE_ASCII 
 
 
+		pch = minimalmodbus.Instrument('/dev/ttyS0', 150) # port name, slave address (in decimal)
+		pch.serial.baudrate = 9600   # Baud
+		pch.serial.bytesize = 8
+		pch.serial.parity   = serial.PARITY_NONE
+		pch.serial.stopbits = 1
+		pch.serial.timeout  = .15   # seconds
+		pch.mode = minimalmodbus.MODE_ASCII 
+		pch = minimalmodbus.Instrument('/dev/ttyS0', 150) # port name, slave address (in decimal)
+		self.pch = pch
+		
 		
 	def init_gtk(self) :
 		self.main = gtk.Window(gtk.WINDOW_TOPLEVEL)
 		self.main.connect("delete_event", self.quit)
 		self.main.connect("destroy", self.quit)
+	
+		self.main.set_size_request(800, 600)
 	
 		self.notebook = gtk.Notebook()
 		
@@ -241,39 +345,92 @@ class Press():
 		vbox = gtk.VBox()		
 		vbox.pack_start(f)		
 
-		l = gtk.Label("0") 
-		self.push_label = l
+		hbox1 = gtk.HBox()
+		self.push_labels = []
+		l = gtk.Label("0 тонн") 
+		self.push_labels.append(l)
+		hbox1.pack_start(l)		
+		
+		l = gtk.Label("(0)") 
+		self.push_labels.append(l)
+		hbox1.pack_start(l)		
+
+		l = gtk.Label("-") 
+		self.push_labels.append(l)
+		hbox1.pack_start(l)		
+		
+		l = gtk.Label("-") 
+		self.push_labels.append(l)
+		hbox1.pack_start(l)		
+
+		l = gtk.Label("-") 
+		self.push_labels.append(l)
+		hbox1.pack_start(l)		
+
+
+		
 		f = gtk.Frame()
-		f.add(l)
+		f.add(hbox1)
 		f.set_label("Давление")
 		vbox.pack_start(f)				
 		
 		hbox = gtk.HBox()
-		hbox.pack_start(vbox)		
 
-		self.notebook.append_page(hbox,gtk.Label("Состояние"))
+		
+
+		img = gtk.Image()
+		img.set_from_file('press.svg')		
+		vbox.pack_start(img)
+		hbox.pack_start(vbox)		
+		self.notebook.append_page(	hbox,gtk.Label("Состояние")	)
 	
 		self.temp_labels = []
 		for i in range(8) :
-			l = gtk.Label("0")
+			l = gtk.Label("Зона %s:"%(i+1))
 			t.attach(l,0,1,i,i+1)
-			self.temp_labels.append(l)
-			
+
 			l = gtk.Label("0")
 			t.attach(l,1,2,i,i+1)
 			self.temp_labels.append(l)
+			
+			l = gtk.Label("0")
+			t.attach(l,2,3,i,i+1)
+			self.temp_labels.append(l)
+			
+			l = gtk.Label("(0)")
+			t.attach(l,3,4,i,i+1)
+			self.temp_labels.append(l)
 
+			l = gtk.Label("_")
+			t.attach(l,4,5,i,i+1)
+			self.temp_labels.append(l)
+
+			l = gtk.Label("_")
+			t.attach(l,6,7,i,i+1)
+			self.temp_labels.append(l)
+			
+			
 		vbox = gtk.VBox()		
 
-		b = gtk.ToggleButton("Пуск")
+		b = gtk.Button("Пуск")
 		b.connect("clicked", self.start)
 		vbox.pack_start(b)				
 		self.cycle_enable = b
 
-		b = gtk.ToggleButton("Стоп")
+		b = gtk.Button("Стоп")
 		b.connect("clicked", self.stop)
 		vbox.pack_start(b)				
 		self.stop = b
+
+		b = gtk.ToggleButton("Расжать")
+		b.connect("clicked", self.release_click)
+		vbox.pack_start(b)				
+		self.release_button = b
+
+		b = gtk.Button("Тест")
+		b.connect("clicked", self.test)
+		vbox.pack_start(b)				
+		self.test_button = b
 		
 		t = gtk.Table()
 		l = gtk.Label("Время в цикле")
@@ -293,10 +450,7 @@ class Press():
 		vbox.pack_start(t)
 		hbox.pack_start(vbox)		
 
-		i = 0
-		for n in self.zones :
-			t = gtk.Table()
-			i = 0
+	
 			#self.notebook.append_page(t,gtk.Label("Зона %s"%n))
 									
 
@@ -304,11 +458,14 @@ class Press():
 
 		self.main.add(self.notebook)
 		self.main.show_all()				
-
+	
+	def release_click(self, *arg) :
+		pass
 
 	def quit(self, *arg) :
 		self.off()
 #		self.conf.write(open("press.ini","w"))
+		subprocess.Popen(["halrun", "-U"])
 		gtk.main_quit()
 		return gtk.FALSE	
 
@@ -319,7 +476,8 @@ class Press():
 	def off(self, *arg) :
 		for z in self.zones :
 			z.heater = False
-			z.cooler = False			
+			z.cooler = False
+		self.pch.write_register(50009,0,0)				
 		self.mu110.write_register(0x62, 0, 0) # Registernumber, value, number of decimals for storage
 		self.mu110.write_register(0x61, 0, 0) # Registernumber, value, number of decimals for storage
 
@@ -327,35 +485,66 @@ class Press():
 		self.running = True
 		self.cycle = 0
 		self.start_time = time()
+		self.press_prog = "prog"
 		gobject.timeout_add(press_update_int, self.run) # call every min		
-		gobject.idle_add(self.update_rs)
+		gobject.timeout_add(10000, self.graph) # call every min		
+
+	
 	
 	def log(self) :	
-		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S"), self.state)
+		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S"), self.state, self.sens)
 		
+	def graph(self) :
+		for i in range(4):
+			z = self.zones[i]
+			self.graph_list[i].append(z.get_temp())
+		self.graph_list[-1].append(time())
+		self.graph_list = [l[-400:] for l in self.graph_list]
 
-
+		if time()-self.last_graph_update > 60 :
+			self.last_graph_update = time()
+								
+	
 
 	def run(self) :
+		print self.press_prog
 		if not self.running :
 			return False
-		else :	
+		if self.press_prog == "prog"  :	
 			self.cycle = time() - self.start_time
 			c = int(self.cycle)
 			self.cycle_label.set_text("%02d:%02d:%02d"%(c/3600,c/60%60,c%60) )
 			done = True
+			self.push.update(self.cycle)	
 			for z in self.zones :
 				z.update(self.cycle)
 				done = done and z.done
-#				print z
 			if done :
+				self.press_prog = "release"
+				self.push.release(True)
+		if self.press_prog == "release" :
+			if self.push.releasing == "done" :
+				self.press_prog = "move"
+		if self.press_prog == "move" :
+			sleep(1)			
+			self.move(self.cycle_move)
+			sleep(3)			
+			self.push.release(False)
+			self.press_prog = "done"
+
+		elif self.press_prog == "done" :
 				self.cycle_count += 1	
 				self.cycle_num.set_text("%s"%self.cycle_count)
 				self.cycle = 0
 				self.start_time = time()
-			return True	
+				self.press_prog = "prog"
+		return True	
 			
-
+			
+	def off_update(self) :
+		for z in self.zones :
+				z.off_update()
+		self.push.off_update()
 
 	def get_conf(self,s,n, set_value=True):
 
@@ -370,9 +559,29 @@ class Press():
 		else:
 			return None	
 
-	
+	def update_labels(self):
+			i = 0
+			for z in self.zones:
+				self.temp_labels[i].set_text("%.1f"%self.sens[z.t_n])
+				self.temp_labels[i+1].set_text("%.1f"%self.sens[z.t1_n])
+				self.temp_labels[i+2].set_text("(%.1f)"%z.get_command(self.cycle))
+				self.temp_labels[i+3].set_text("H" if z.heater else "-")
+				self.temp_labels[i+4].set_text("O" if z.cooler else "-")
+
+				
+				i += 5
+			self.push_labels[0].set_text("%.1f тонн"%self.push.get_fb())
+			self.push_labels[1].set_text("(%.1f)"%self.push.get_command(self.cycle))
+			
+			self.push_labels[2].set_text("\\/" if self.push.push else "--")
+			self.push_labels[3].set_text("/\\" if self.push.pull else "--")
+			self.push_labels[4].set_text("%.1fHz" % self.push.freq )
+			
+
 
 	def update_rs(self, off=False) :
+		
+		self.push.release(self.release_button.get_active() or self.push.releasing!=False )
 		
 		if True :
 			# write rele
@@ -381,11 +590,9 @@ class Press():
 			for z in self.zones :
  				state[z.heater_n] = z.heater
  				state[z.cooler_n] = z.cooler
+			state[self.push.push_n] = self.push.push
+			state[self.push.pull_n] = self.push.pull
 			
-			#state[self.push.down_n] = self.push.down
-			#state[self.push.up_n] = self.push.up
-# 			print state 
- #			print self.state
  			if self.state != state :
 	 			t, t1 = 0,0
 				for i in range(16):
@@ -394,10 +601,34 @@ class Press():
 			
 				self.mu110.write_register(0x62, t, 0) # Registernumber, value, number of decimals for storage
 				self.mu110.write_register(0x61, t1, 0) # Registernumber, value, number of decimals for storage
+			
+			if self.push.freq != self.freq_state :
+				b = False
+				while not b : 
+					try: 
+						self.push.pch.write_register(50009,self.push.freq,0)
+						self.freq_state = self.push.freq
+						print "True!!!"
+						b = True
+					except: 
+						b = False
 		
-		n = 17
+		n = 16
 		c = self.rs_read_counter%n
+		# update labels
+		self.update_labels()
 
+
+		if self.rs_read_counter%4 == 0 :
+			# read pressure
+			t = self.push.sens_n
+			mv_ = t/8
+			mv = self.mv110[mv_]
+			n_ = t%8*6
+			v = mv.read_register(n_+1)
+			m = mv.read_register(n_+0)
+			self.sens[t] = float(v)/(10**m)		
+			print "Pressure = ", 	self.push.get_fb()
 		# read temp
 		mv_ = c/8
 		mv = self.mv110[mv_]
@@ -406,13 +637,7 @@ class Press():
 		m = mv.read_register(n_+0)
 		self.sens[c] = float(v)/(10**m)	
 		
-		if c == 0 :
-			i = 0
-			for z in self.zones:
-				self.temp_labels[i].set_text("%.1f"%self.sens[z.t_n])
-				self.temp_labels[i+1].set_text("%.1f"%self.sens[z.t1_n])
-				i += 2
-			self.push_label.set_text("%.1f тонн"%self.sens[self.push.sens_n])
+		
 			
 		self.rs_read_counter += 1	
 			
