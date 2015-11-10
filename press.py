@@ -10,6 +10,7 @@ import minimalmodbus
 import serial
 import subprocess
 press_update_int = 1000
+PCH_K = 1600./3.9
 
 class Zone() :
 
@@ -112,6 +113,18 @@ class Push() :
 		self.pch = press.pch
 		self.releasing = False
 		self.release_timer = 0.
+		
+	def __repr__(self) : 
+		t=  self.release_timer - time()  
+		return ("Push " + ("\\/ " if self.push else "-- ") + 
+				 ("/\\/ " if self.pull else "-- ") +
+				  "%.1f %.1f "%(self.freq, self.get_fb())  +
+				  "(%.1f) "%self.get_command(self.press.cycle) +
+				  "(releasing: %s %s)"% (self.releasing,("%.1f "%t if t>0 else "" ))
+				  
+				  
+			)
+		
 	def get_fb(self) :
 		k = 0.2
 		return self.press.sens[self.sens_n] * k
@@ -120,8 +133,7 @@ class Push() :
 	def set_freq(self, f=0, rappid = False) :
 		if rappid :  
 			f = 33.
-		k = 1600./3.9
-		self.freq = f*k
+		self.freq = f*PCH_K
 		
 	
 	def update(self, cycle) :
@@ -132,7 +144,7 @@ class Push() :
 		c = self.get_command(cycle)
 		fb = self.get_fb()
 		c = c-fb
-		print self.get_command(cycle), fb, c, self.dead_band
+
 		if c > self.dead_band :
 			c = min(c,self.max_t)
 			self.push_off = time()+c
@@ -156,13 +168,13 @@ class Push() :
 		pass
 	
 
-	def release(self, release=True) :
-		if release :
-			if self.releasing not in ["pull up", "wait", "done"] :
-				self.releasing = "start release"
-		else : 
-			self.releasing = False
-		
+	def release(self, release=None) :
+		if release == False : 
+			if not self.press.release_button.get_active() :
+				self.releasing = False
+		if release or (self.press.release_button.get_active() and (self.releasing == False) ) :
+			self.releasing = "start release"
+			
 		if self.releasing  == "start release" : 
 			self.push = False
 			self.pull = True
@@ -246,9 +258,10 @@ class Press():
 		self.running = False
 		self.init_gtk()
 		self.log_file = open("log/log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w")
+		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S,	")+ "Z1T0,	Z1T1,	Z2T0,	Z2T1,	Z3T0,	Z3T1,	Z4T0,	Z4T1,	Z5T0,	Z5T1,	Z6T0,	Z6T1,	Z7T0,	Z7T1,	Z8T0,	Z8T1,	Pressure\n")
+		gobject.timeout_add(10000, self.log) # call every min
 		self.cycle_count = 0
 		self.init_rs()
-		self.off()
 		self.rs_read_counter = 0
 		self.push = Push(self)
 		self.state = [0 for i in range(32)]
@@ -260,7 +273,16 @@ class Press():
 		self.cycle_move = float(self.get_conf("Prog", "move"))
 		self.press_prog = ["prog", "release", "wait release", "move"]
 		self.freq_state = -1
-		
+		self.label_update_timer = -1
+		self.off()
+
+	def __repr__(self) :
+		return ("<Press> "+ "c=%.1f %s %s\n"%(self.cycle,  self.running, self.press_prog)+
+				"%s\n"%self.push +
+				"0      70        70      7\n" +
+				"".join([ "1" if i else "0" for i in self.state]) +
+				"\n\n"
+				)
 	def init_linuxcnc(self) :
 		print "Start halrun"	
 		subprocess.Popen(["halrun"])
@@ -460,7 +482,8 @@ class Press():
 		self.main.show_all()				
 	
 	def release_click(self, *arg) :
-		pass
+		self.push.release(self.release_button.get_active())
+
 
 	def quit(self, *arg) :
 		self.off()
@@ -471,16 +494,21 @@ class Press():
 
 	def stop(self, *arg) :
 		self.running = False
+		self.press_prog == "stop" 		
 		self.off()		
 
 	def off(self, *arg) :
 		for z in self.zones :
 			z.heater = False
 			z.cooler = False
+		self.push.freq = 0	
 		self.pch.write_register(50009,0,0)				
 		self.mu110.write_register(0x62, 0, 0) # Registernumber, value, number of decimals for storage
 		self.mu110.write_register(0x61, 0, 0) # Registernumber, value, number of decimals for storage
-
+		self.state = [False for i in range(32)]
+		self.push.pull = False
+		self.push.push = False		
+		
 	def start(self, *arg) :
 		self.running = True
 		self.cycle = 0
@@ -491,8 +519,14 @@ class Press():
 
 	
 	
-	def log(self) :	
-		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S"), self.state, self.sens)
+	def log(self) :
+		l = ""	
+		for z in self.zones :
+			l +="%.1f,	" % z.get_temp(0)
+			l +="%.1f,	" % z.get_temp(1)
+		l += "%.1f,	" % self.push.get_fb()
+		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S,	")+l + "\n")
+		
 		
 	def graph(self) :
 		for i in range(4):
@@ -507,37 +541,41 @@ class Press():
 	
 
 	def run(self) :
-		print self.press_prog
+		print self
 		if not self.running :
 			return False
-		if self.press_prog == "prog"  :	
-			self.cycle = time() - self.start_time
-			c = int(self.cycle)
-			self.cycle_label.set_text("%02d:%02d:%02d"%(c/3600,c/60%60,c%60) )
-			done = True
-			self.push.update(self.cycle)	
-			for z in self.zones :
-				z.update(self.cycle)
-				done = done and z.done
-			if done :
-				self.press_prog = "release"
-				self.push.release(True)
-		if self.press_prog == "release" :
-			if self.push.releasing == "done" :
-				self.press_prog = "move"
-		if self.press_prog == "move" :
-			sleep(1)			
-			self.move(self.cycle_move)
-			sleep(3)			
-			self.push.release(False)
-			self.press_prog = "done"
+		if self.push.freq > 0  :
+			# operate pusher
+			self.push.update(self.cycle)
+		else :
+			if self.press_prog == "prog"  :	
+				self.cycle = time() - self.start_time
+				c = int(self.cycle)
+				self.cycle_label.set_text("%02d:%02d:%02d"%(c/3600,c/60%60,c%60) )
+				done = True
+				self.push.update(self.cycle)
+				for z in self.zones :
+					z.update(self.cycle)
+					done = done and z.done
+				if done :
+					self.press_prog = "release"
+					self.push.release(True)
+			if self.press_prog == "release" :
+				if self.push.releasing == "done" :
+					self.press_prog = "move"
+			if self.press_prog == "move" :
+				sleep(1)			
+				self.move(self.cycle_move)
+				sleep(3)			
+				self.push.release(False)
+				self.press_prog = "done"
 
-		elif self.press_prog == "done" :
-				self.cycle_count += 1	
-				self.cycle_num.set_text("%s"%self.cycle_count)
-				self.cycle = 0
-				self.start_time = time()
-				self.press_prog = "prog"
+			if self.press_prog == "done" :
+					self.cycle_count += 1	
+					self.cycle_num.set_text("%s"%self.cycle_count)
+					self.cycle = 0
+					self.start_time = time()
+					self.press_prog = "prog"
 		return True	
 			
 			
@@ -559,7 +597,12 @@ class Press():
 		else:
 			return None	
 
+	
 	def update_labels(self):
+	
+		if self.label_update_timer < time() :
+			self.label_update_timer = time() + 0.5
+			
 			i = 0
 			for z in self.zones:
 				self.temp_labels[i].set_text("%.1f"%self.sens[z.t_n])
@@ -575,71 +618,83 @@ class Press():
 			
 			self.push_labels[2].set_text("\\/" if self.push.push else "--")
 			self.push_labels[3].set_text("/\\" if self.push.pull else "--")
-			self.push_labels[4].set_text("%.1fHz" % self.push.freq )
+			self.push_labels[4].set_text("%.1fHz" % (self.push.freq/PCH_K) )
 			
 
-
-	def update_rs(self, off=False) :
+	def read_sens(self, c) :
 		
-		self.push.release(self.release_button.get_active() or self.push.releasing!=False )
-		
-		if True :
-			# write rele
-			state = [False for i in range(32)]
-			
-			for z in self.zones :
- 				state[z.heater_n] = z.heater
- 				state[z.cooler_n] = z.cooler
-			state[self.push.push_n] = self.push.push
-			state[self.push.pull_n] = self.push.pull
-			
- 			if self.state != state :
-	 			t, t1 = 0,0
-				for i in range(16):
-					t |= (1<<i)*state[i]
-					t1 |= (1<<i)*state[i+16]
-			
-				self.mu110.write_register(0x62, t, 0) # Registernumber, value, number of decimals for storage
-				self.mu110.write_register(0x61, t1, 0) # Registernumber, value, number of decimals for storage
-			
-			if self.push.freq != self.freq_state :
-				b = False
-				while not b : 
-					try: 
-						self.push.pch.write_register(50009,self.push.freq,0)
-						self.freq_state = self.push.freq
-						print "True!!!"
-						b = True
-					except: 
-						b = False
-		
-		n = 16
-		c = self.rs_read_counter%n
-		# update labels
-		self.update_labels()
-
-
-		if self.rs_read_counter%4 == 0 :
-			# read pressure
-			t = self.push.sens_n
-			mv_ = t/8
-			mv = self.mv110[mv_]
-			n_ = t%8*6
-			v = mv.read_register(n_+1)
-			m = mv.read_register(n_+0)
-			self.sens[t] = float(v)/(10**m)		
-			print "Pressure = ", 	self.push.get_fb()
-		# read temp
 		mv_ = c/8
 		mv = self.mv110[mv_]
 		n_ = c%8*6
 		v = mv.read_register(n_+1)
 		m = mv.read_register(n_+0)
 		self.sens[c] = float(v)/(10**m)	
+		return self.sens[c]
+
+
+	def write_m110(self, state) :
+		if self.state != state :
+ 			t, t1 = 0,0
+			for i in range(16):
+				t |= (1<<i)*state[i]
+				t1 |= (1<<i)*state[i+16]
+			b = False			
+			while not b	:
+				try : 
+					self.mu110.write_register(0x62, t, 0) # Registernumber, value, number of decimals for storage
+					b = True
+				except :
+					b = False	
+			b = False			
+			while not b	:
+				try : 
+					self.mu110.write_register(0x61, t1, 0) # Registernumber, value, number of decimals for storage
+					b = True
+				except :
+					b = False	
+		self.state = state					
+
+	
+
+	def update_rs(self, off=False) :
+		self.push.release()
+
+		state = [False for i in range(32)]
 		
-		
-			
-		self.rs_read_counter += 1	
+		if (self.push.freq > 0) : 
+			# operate pusher
+			for z in self.zones :
+				state[z.heater_n] = False
+ 				state[z.cooler_n] = False
+						
+		else :		
+			for z in self.zones :
+ 				state[z.heater_n] = z.heater
+ 				state[z.cooler_n] = z.cooler
+
+		state[self.push.push_n] = self.push.push
+		state[self.push.pull_n] = self.push.pull
+		self.write_m110(state)
+
+		if self.push.freq != self.freq_state :
+			b = False
+			while not b : 
+				try: 
+					self.push.pch.write_register(50009,self.push.freq,0)
+					self.freq_state = self.push.freq
+					b = True
+				except: 
+					b = False
+
+		if (self.push.freq > 0) : 
+			# operate pusher
+			self.read_sens(self.push.sens_n)
+		else :	
+			self.read_sens(self.rs_read_counter % 17)
+			self.rs_read_counter += 1	
+
+		# update labels
+		self.update_labels()
 			
 		return True
 						
