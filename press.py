@@ -126,7 +126,7 @@ class Push() :
 			)
 		
 	def get_fb(self) :
-		k = 0.2
+		k = 0.2 *1000. / 33. / self.width  
 		return self.press.sens[self.sens_n] * k
 		
 	
@@ -207,8 +207,11 @@ class Push() :
 		self.push_n = int(self.press.get_conf("Push", "push_n") )
 		self.pull_n = int(self.press.get_conf("Push", "pull_n") )
 		self.sens_n = int(self.press.get_conf("Push", "sens_n") )
+		self.width = float(self.press.get_conf("Prog", "Width"))
 		self.dead_band = float(self.press.get_conf("Push", "Мертвая_зона"))
+		self.dead_band *= 33.*self.width/1000. 
 		self.max_t = float(self.press.get_conf("Push", "max_t") 		)
+		
 		self.prog = [[],[]]
 		self.push = False
 		self.pull = False	
@@ -257,7 +260,7 @@ class Press():
 		self.inv = []
 		self.running = False
 		self.init_gtk()
-		self.log_file = open("log/log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w")
+		self.log_file = open("log/log-%s.csv"%strftime("%Y-%m-%d %H:%M:%S"),"w+")
 		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S,	")+ "Z1T0,	Z1T1,	Z2T0,	Z2T1,	Z3T0,	Z3T1,	Z4T0,	Z4T1,	Z5T0,	Z5T1,	Z6T0,	Z6T1,	Z7T0,	Z7T1,	Z8T0,	Z8T1,	Pressure\n")
 		gobject.timeout_add(10000, self.log) # call every min
 		self.cycle_count = 0
@@ -369,7 +372,7 @@ class Press():
 
 		hbox1 = gtk.HBox()
 		self.push_labels = []
-		l = gtk.Label("0 тонн") 
+		l = gtk.Label("0 МПа") 
 		self.push_labels.append(l)
 		hbox1.pack_start(l)		
 		
@@ -524,8 +527,10 @@ class Press():
 		for z in self.zones :
 			l +="%.1f,	" % z.get_temp(0)
 			l +="%.1f,	" % z.get_temp(1)
-		l += "%.1f,	" % self.push.get_fb()
+		l += "%.3f,	" % self.push.get_fb()
 		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S,	")+l + "\n")
+		self.log_file.flush()
+		return True
 		
 		
 	def graph(self) :
@@ -613,7 +618,7 @@ class Press():
 
 				
 				i += 5
-			self.push_labels[0].set_text("%.1f тонн"%self.push.get_fb())
+			self.push_labels[0].set_text("%.3f МПа"%self.push.get_fb())
 			self.push_labels[1].set_text("(%.1f)"%self.push.get_command(self.cycle))
 			
 			self.push_labels[2].set_text("\\/" if self.push.push else "--")
