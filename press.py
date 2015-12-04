@@ -39,18 +39,7 @@ class Zone() :
 		self.dead_band = float(self.press.get_conf("Zone%s"%self.i, "Мертвая_зона") )
 		self.max_heat_t = float(self.press.get_conf("Zone%s"%self.i, "max_heat_t") )
 		self.cooler_idle_time = float(self.press.get_conf("Params", "cooler_idle_time") )
-		
-		
-		#self.pid.Kp = self.press.get_conf("Zone%s"%self.i, "p") 
-		#self.pid.Ki = self.press.get_conf("Zone%s"%self.i, "i") 
-		#self.pid.Kd = self.press.get_conf("Zone%s"%self.i, "d") 
-		prog = eval(self.press.get_conf("Prog", "Zone%s"%(self.i%4+1)))
-		i = 1
-		t = 0
-		self.prog = [[],[]]
-		for t in prog :
-			self.prog[1].append(t[0])
-			self.prog[0].append(t[1])
+		self.prog = eval(self.press.get_conf("Prog", "Zone%s"%(self.i%4+1)))
 
 
 	def get_temp(self, t=0) :
@@ -62,10 +51,13 @@ class Zone() :
 	def update(self, cycle) :
 		#self.pid.set_point = self.get_command(cycle)
 		#c = self.pid.update(self.t)
-		self.done = sum(self.prog[0])<cycle
+		self.done = cycle>len(self.prog)
 		c = self.get_command(cycle) - self.get_temp()
 		self.c = c, self.get_command(cycle), self.dead_band	
 		
+		if -self.dead_band <= c <= self.dead_band : 
+			self.ready = time.time() + self.press.ready_time
+
 		if c > self.dead_band and self.last_cooler_timer<time() :
 			c = min(c,self.max_heat_t)
 			self.heater_off = time()+min(self.max_heat_t, c*self.temp_k)
@@ -94,21 +86,11 @@ class Zone() :
 			self.press.update_rs(off=True)
 		
 	def get_command(self, cycle) :
-		t = 0 
 		if cycle <= 0:
-			return self.prog[1][0]
-		if cycle >= sum(self.prog[0])-self.prog[0][-1] :
-			return self.prog[1][-1]
-		
-		for i in range(len(self.prog[0])) :
-			t += self.prog[0][i]
-			if t>cycle :
-				break
-		t1 = t - self.prog[0][i]		
-		
-		t_ = float(cycle - t1)/(t-t1)
-		c = float(self.prog[1][i+1] - self.prog[1][i]) * t_ + self.prog[1][i]
-		return c
+			return self.prog[0]
+		if cycle > len(self.prog[0]) :
+			return self.prog[-1]
+		return self.prog[cycle]
 
 
 class Push() :
@@ -220,13 +202,7 @@ class Push() :
 		self.pull = False	
 		self.freq = 0
 		
-		prog = eval(self.press.get_conf("Prog", "Push")) 
-		i = 1
-		t = 0
-		self.prog = [[],[]]
-		for t in prog :
-			self.prog[1].append(t[0])
-			self.prog[0].append(t[1])
+		self.prog = eval(self.press.get_conf("Prog", "Push")) 
 
 
 
@@ -276,7 +252,8 @@ class Press():
 		gobject.idle_add(self.update_rs)	
 		self.cycle = 0
 		self.init_linuxcnc()
-		self.cycle_move = float(self.get_conf("Prog", "move"))
+		self.cycle_move = float(self.get_conf("Prog", "Move"))
+		self.ready_time = float(self.get_conf("Prog", "Time"))
 		self.press_prog = ["prog", "release", "wait release", "move"]
 		self.freq_state = -1
 		self.label_update_timer = -1
@@ -519,6 +496,7 @@ class Press():
 		self.running = True
 		self.cycle = 0
 		self.start_time = time()
+		
 		self.press_prog = "prog"
 		gobject.timeout_add(press_update_int, self.run) # call every min		
 		gobject.timeout_add(10000, self.graph) # call every min		
@@ -557,13 +535,17 @@ class Press():
 			self.push.update(self.cycle)
 		else :
 			if self.press_prog == "prog"  :	
-				self.cycle = time() - self.start_time
-				c = int(self.cycle)
+				c = time() - self.start_time
+				c = int(c)
 				self.cycle_label.set_text("%02d:%02d:%02d"%(c/3600,c/60%60,c%60) )
 				done = True
+				ready= False
 				self.push.update(self.cycle)
 				for z in self.zones :
 					z.update(self.cycle)
+					ready = ready and (z.ready > time.time())
+					if ready : 
+						self.cycle += 1
 					done = done and z.done
 				if done :
 					self.press_prog = "release"
