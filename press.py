@@ -28,7 +28,7 @@ class Zone() :
 		self.cooler = False
 		self.c = 0
 		self.get_conf()
-
+		self.last_cooler_timer = 0
 		
 		
 	def get_conf(self) :
@@ -38,6 +38,8 @@ class Zone() :
 		self.t1_n = int(self.press.get_conf("Zone%s"%self.i, "t1_n") )
 		self.dead_band = float(self.press.get_conf("Zone%s"%self.i, "Мертвая_зона") )
 		self.max_heat_t = float(self.press.get_conf("Zone%s"%self.i, "max_heat_t") )
+		self.cooler_idle_time = float(self.press.get_conf("Params", "cooler_idle_time") )
+		
 		
 		#self.pid.Kp = self.press.get_conf("Zone%s"%self.i, "p") 
 		#self.pid.Ki = self.press.get_conf("Zone%s"%self.i, "i") 
@@ -64,7 +66,7 @@ class Zone() :
 		c = self.get_command(cycle) - self.get_temp()
 		self.c = c, self.get_command(cycle), self.dead_band	
 		
-		if c > self.dead_band :
+		if c > self.dead_band and self.last_cooler_timer<time() :
 			c = min(c,self.max_heat_t)
 			self.heater_off = time()+min(self.max_heat_t, c*self.temp_k)
 			self.heater = True
@@ -74,7 +76,10 @@ class Zone() :
 			self.cooler_off = time()+min(self.max_heat_t, c*self.temp_k)
 			self.heater = False
 			self.cooler = True
+			self.last_cooler_timer	= time()+self.cooler_idle_time			
 		else :	
+			if self.cooler: 
+				 self.last_cooler_timer	= time()+self.cooler_idle_time
 			self.heater = False
 			self.cooler = False
 			
@@ -126,7 +131,7 @@ class Push() :
 			)
 		
 	def get_fb(self) :
-		k = 0.2 *1000. / 33. / self.width  
+		k = 0.2
 		return self.press.sens[self.sens_n] * k
 		
 	
@@ -149,9 +154,9 @@ class Push() :
 			c = min(c,self.max_t)
 			self.push_off = time()+c
 			if self.get_fb()<1 :
-				self.set_freq(10.)
+				self.set_freq(4.)
 			else: 
-				self.set_freq(3.9)
+				self.set_freq(.4)
 			
 			self.push = True
 			self.pull = False
@@ -207,9 +212,7 @@ class Push() :
 		self.push_n = int(self.press.get_conf("Push", "push_n") )
 		self.pull_n = int(self.press.get_conf("Push", "pull_n") )
 		self.sens_n = int(self.press.get_conf("Push", "sens_n") )
-		self.width = float(self.press.get_conf("Prog", "Width"))
 		self.dead_band = float(self.press.get_conf("Push", "Мертвая_зона"))
-		self.dead_band *= 33.*self.width/1000. 
 		self.max_t = float(self.press.get_conf("Push", "max_t") 		)
 		
 		self.prog = [[],[]]
@@ -372,7 +375,7 @@ class Press():
 
 		hbox1 = gtk.HBox()
 		self.push_labels = []
-		l = gtk.Label("0 МПа") 
+		l = gtk.Label("0 тонн") 
 		self.push_labels.append(l)
 		hbox1.pack_start(l)		
 		
@@ -527,7 +530,7 @@ class Press():
 		for z in self.zones :
 			l +="%.1f,	" % z.get_temp(0)
 			l +="%.1f,	" % z.get_temp(1)
-		l += "%.3f,	" % self.push.get_fb()
+		l += "%.1f,	" % self.push.get_fb()
 		self.log_file.write(strftime("%Y-%m-%d %H:%M:%S,	")+l + "\n")
 		self.log_file.flush()
 		return True
@@ -618,7 +621,7 @@ class Press():
 
 				
 				i += 5
-			self.push_labels[0].set_text("%.3f МПа"%self.push.get_fb())
+			self.push_labels[0].set_text("%.3f тонн"%self.push.get_fb())
 			self.push_labels[1].set_text("(%.1f)"%self.push.get_command(self.cycle))
 			
 			self.push_labels[2].set_text("\\/" if self.push.push else "--")
